@@ -203,8 +203,7 @@
       maxShadowOpacity: 0.35,
       flippingTime: FLIP_TIME,
       mobileScrollSupport: false,
-      useMouseEvents: mode === 'single',  // glisser au doigt : 1 page seulement (pas de page vide ni de décalage)
-      swipeDistance: 30,
+      useMouseEvents: false,              // aucune interaction directe : ni coins, ni clic, ni glisser (boutons / clavier uniquement)
       showPageCorners: false,
       startPage: startView * perView
     });
