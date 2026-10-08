@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kalodon Numbers – Comptabilité | Laboratoires PRED</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <img src="logo-pred.png" alt="Laboratoires PRED" class="logo">
+  </header>
+
+  <main class="stage" id="stage">
+    <div id="book"></div>
+    <p class="loader" id="loader" role="status">Chargement du document…</p>
+  </main>
+
+  <nav class="controls" aria-label="Navigation du livre">
+    <button type="button" id="btn-prev" class="btn is-hidden">← Précédent</button>
+    <span id="counter" class="counter" aria-live="polite"></span>
+    <button type="button" id="btn-next" class="btn">Suivant →</button>
+  </nav>
+
+  <!-- Dépendances (CDN). Pour un usage hors-ligne, téléchargez-les à côté de ces fichiers. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/page-flip@2.0.7/dist/js/page-flip.browser.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
