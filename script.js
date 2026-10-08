@@ -2,38 +2,40 @@
   'use strict';
 
   /* ---------------- Configuration ---------------- */
-  const PDF_URL   = 'kalodon_numbers_comptabilite_fr.pdf';
-  const PAGE_W    = 1280;   // dimensions d'une page (16:9)
-  const PAGE_H    = 720;
-  const RENDER_W  = 1920;   // largeur du canvas rendu (netteté vs mémoire)
-  const FLIP_TIME = 1000;   // durée de la pliure (ms), identique pour TOUTES les pages
+  const PDF_URL    = 'kalodon_numbers_comptabilite_fr.pdf';
+  const PAGE_W     = 1280;   // dimensions d'une page (16:9)
+  const PAGE_H     = 720;
+  const RENDER_W   = 1920;   // largeur du canvas rendu (netteté vs mémoire)
+  const FLIP_TIME  = 1000;   // durée de la pliure (ms), identique pour TOUTES les pages
+  const SINGLE_MAX = 640;    // en dessous de cette largeur d'écran : 1 page à la fois (téléphone en portrait)
+  const WINDOW     = 2;      // vues gardées en mémoire de chaque côté de la vue courante
 
   const pdfjsLib = window['pdfjs-dist/build/pdf'];
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-  const bookEl  = document.getElementById('book');
   const stageEl = document.getElementById('stage');
   const loader  = document.getElementById('loader');
   const btnPrev = document.getElementById('btn-prev');
   const btnNext = document.getElementById('btn-next');
+  const counter = document.getElementById('counter');
+  let bookEl    = document.getElementById('book');
 
-  let pageFlip = null;
-  let lastIsSingle = true;
-  let spreads  = 0;          // nombre de "vues" (couverture, doubles pages, dernière page)
-
-  /* ---------------- Rendu PDF -> canvas (paresseux) ----------------
-     Un catalogue entier à 1920 px de large dépasse la mémoire du navigateur
-     (pages blanches ou manquantes). On ne garde donc en mémoire que les pages
-     proches de la vue courante, les autres sont libérées puis re-rendues
-     à la demande. */
   let pdf = null;
-  let items = [];        // une entrée par page du PDF : { num, canvas, status }
-  let bookItems = [];    // item (ou null pour une page vide) par position dans le livre
-  const WINDOW = 2;      // vues conservées de chaque côté de la vue courante
+  let items = [];            // une entrée par page du PDF : { num, canvas, status }
+  let bookItems = [];        // item (ou null = page vide) par position dans le livre
+  let pageFlip = null;
+  let mode = 'spread';       // 'single' (téléphone portrait) | 'spread' (double page)
+  let perView = 2;           // pages par vue : 1 ou 2
+  let views = 0;             // nombre de vues
+  let lastIsSingle = true;   // 4e de couverture seule (mode double page, nb de pages pair)
+  let building = false;
 
+  const isSingle = () => window.innerWidth < SINGLE_MAX;
+
+  /* ---------------- Rendu PDF -> canvas (paresseux) ---------------- */
   async function draw(item) {
-    if (item.status !== 'idle') return;
+    if (!item || item.status !== 'idle') return;
     item.status = 'busy';
     try {
       const page = await pdf.getPage(item.num);
@@ -56,15 +58,17 @@
   }
 
   let drawChain = Promise.resolve();
-  function refresh(spread) {
-    const first = (spread - WINDOW) * 2, last = (spread + WINDOW) * 2 + 1;
+  function refresh(view) {
+    const first  = (view - WINDOW) * perView;
+    const last   = (view + WINDOW) * perView + perView - 1;
+    const center = view * perView + (perView - 1) / 2;
     const wanted = [];
     bookItems.forEach((item, i) => {
       if (!item) return;
-      if (i >= first && i <= last) wanted.push({ item, d: Math.abs(i - spread * 2 - 0.5) });
+      if (i >= first && i <= last) wanted.push({ item, d: Math.abs(i - center) });
       else release(item);
     });
-    wanted.sort((a, b) => a.d - b.d);              // les plus proches d'abord
+    wanted.sort((a, b) => a.d - b.d);               // les plus proches d'abord
     wanted.forEach(({ item }) => { drawChain = drawChain.then(() => draw(item)); });
     return drawChain;
   }
@@ -72,45 +76,52 @@
   function makePage(item) {
     const div = document.createElement('div');
     div.className = 'page' + (item ? '' : ' page--blank');
-    div.dataset.density = 'soft';          // pliure souple pour TOUTES les pages
+    div.dataset.density = 'soft';                   // pliure souple pour TOUTES les pages
     if (item) div.appendChild(item.canvas);
     return div;
   }
 
-  function updateCounter() {
-    const s = currentSpread();
-    const nums = [bookItems[2 * s], bookItems[2 * s + 1]].filter(Boolean).map((i) => i.num);
-    document.getElementById('counter').textContent =
-      nums.length > 1 ? `${nums[0]}–${nums[1]} / ${items.length}` : `${nums[0]} / ${items.length}`;
-  }
-
-  /* ---------------- Taille du livre (double page = 32:9) ---------------- */
+  /* ---------------- Taille du livre ---------------- */
   function fitBook() {
-    const availW = stageEl.clientWidth  * 0.97;
-    const availH = stageEl.clientHeight * 0.97;
-    const ratio = (PAGE_W * 2) / PAGE_H;
-    const w = Math.min(availW, availH * ratio);
+    let w;
+    if (mode === 'single') {
+      // 1 page 16:9 : on prend toute la largeur (max 599 px pour rester en mode portrait)
+      const availW = Math.min(stageEl.clientWidth, 599);
+      const availH = stageEl.clientHeight;
+      w = Math.min(availW, availH * (PAGE_W / PAGE_H));
+    } else {
+      // double page = 2 x 16:9
+      const availW = stageEl.clientWidth  * 0.97;
+      const availH = stageEl.clientHeight * 0.97;
+      w = Math.min(availW, availH * ((PAGE_W * 2) / PAGE_H));
+    }
+    const h = w / (mode === 'single' ? PAGE_W / PAGE_H : (PAGE_W * 2) / PAGE_H);
     bookEl.style.width  = Math.floor(w) + 'px';
-    bookEl.style.height = Math.floor(w / ratio) + 'px';
+    bookEl.style.height = Math.floor(h) + 'px';
   }
 
   /* ---------------- Vue courante ---------------- */
-  // Livre : [vide, couverture, p2, p3, ..., dernière, vide]
-  // => vue 0 = couverture (moitié droite), dernière vue = 4e de couverture (moitié gauche)
-  function currentSpread() {
-    return Math.floor(pageFlip.getCurrentPageIndex() / 2);
+  function currentView() {
+    const i = pageFlip.getCurrentPageIndex();
+    return perView === 2 ? Math.floor(i / 2) : i;
   }
+  const clampView = (v) => Math.max(0, Math.min(views - 1, v));
 
-  /* ---------------- Centrage animé, lié à la pliure ----------------
+  /* ---------------- Centrage animé (mode double page) ----------------
      Le livre glisse de 25 % de sa largeur pendant que la page tourne,
-     en temps réel (pas de transition CSS) : la reliure suit le papier. */
-  const shiftFor = (s) => (s <= 0 ? -25 : (s >= spreads - 1 && lastIsSingle) ? 25 : 0);
+     en temps réel : la reliure suit le papier. En mode 1 page : aucun décalage. */
+  const shiftFor = (v) => {
+    if (mode === 'single') return 0;
+    if (v <= 0) return -25;
+    if (v >= views - 1 && lastIsSingle) return 25;
+    return 0;
+  };
 
-  let shiftNow = -25, shiftTarget = -25, shiftRaf = 0;
+  let shiftNow = 0, shiftTarget = 0, shiftRaf = 0;
 
   function applyShift(v) {
     shiftNow = v;
-    bookEl.style.transform = `translate3d(${v}%, 0, 0)`;
+    bookEl.style.transform = v ? `translate3d(${v}%, 0, 0)` : 'none';
   }
 
   function animateShift(target) {
@@ -126,23 +137,98 @@
     shiftRaf = requestAnimationFrame(step);
   }
 
-  /* ---------------- Boutons ---------------- */
+  /* ---------------- Boutons et compteur ---------------- */
   function updateButtons() {
-    const s = currentSpread();
-    btnPrev.classList.toggle('is-hidden', s <= 0);
-    btnNext.classList.toggle('is-hidden', s >= spreads - 1);
-    updateCounter();
-    refresh(s);
+    if (!pageFlip) return;
+    const v = currentView();
+    btnPrev.classList.toggle('is-hidden', v <= 0);
+    btnNext.classList.toggle('is-hidden', v >= views - 1);
+    const nums = bookItems.slice(v * perView, v * perView + perView).filter(Boolean).map((i) => i.num);
+    counter.textContent = nums.length > 1
+      ? `${nums[0]}–${nums[1]} / ${items.length}`
+      : `${nums[0]} / ${items.length}`;
+    refresh(v);
   }
 
-  function go(dir) {                       // dir = +1 (suivant) / -1 (précédent)
-    if (!pageFlip) return;
-    const target = Math.max(0, Math.min(spreads - 1, currentSpread() + dir));
-    animateShift(shiftFor(target));
+  function go(dir) {                       // +1 suivant / -1 précédent
+    if (!pageFlip || building) return;
+    animateShift(shiftFor(clampView(currentView() + dir)));
     dir > 0 ? pageFlip.flipNext() : pageFlip.flipPrev();
   }
 
-  /* ---------------- Initialisation ---------------- */
+  /* ---------------- Construction du livre ---------------- */
+  async function build(startNum) {
+    building = true;
+    cancelAnimationFrame(shiftRaf); shiftRaf = 0;
+
+    mode    = isSingle() ? 'single' : 'spread';
+    perView = mode === 'single' ? 1 : 2;
+    document.body.dataset.mode = mode;
+
+    if (mode === 'single') {
+      bookItems = items.slice();                         // 1 page = 1 vue
+    } else {
+      bookItems = [null, ...items];                      // page vide invisible avant la couverture
+      if (bookItems.length % 2 !== 0) bookItems.push(null); // pair : 4e de couverture seule
+    }
+    lastIsSingle = mode === 'spread' && bookItems[bookItems.length - 1] === null;
+    views = bookItems.length / perView;
+
+    const startView = clampView(mode === 'single' ? startNum - 1 : Math.floor(startNum / 2));
+
+    // Nouveau conteneur propre
+    if (pageFlip) { try { pageFlip.destroy(); } catch (_) {} pageFlip = null; }
+    const fresh = document.createElement('div');
+    fresh.id = 'book';
+    if (bookEl.isConnected) bookEl.replaceWith(fresh); else stageEl.prepend(fresh);
+    bookEl = fresh;
+    fitBook();
+
+    // Page(s) de la vue de départ d'abord, le reste en arrière-plan
+    await Promise.all(
+      bookItems.slice(startView * perView, startView * perView + perView).map(draw)
+    );
+    refresh(startView);
+
+    pageFlip = new St.PageFlip(bookEl, {
+      width: PAGE_W,
+      height: PAGE_H,
+      size: 'stretch',
+      minWidth: 300,  maxWidth: 2000,     // 2 x 300 = 600 : en dessous, StPageFlip passe en 1 page
+      minHeight: 160, maxHeight: 1125,
+      showCover: false,                   // showCover rend les couvertures rigides : on s'en passe
+      usePortrait: true,
+      autoSize: true,
+      drawShadow: true,
+      maxShadowOpacity: 0.35,
+      flippingTime: FLIP_TIME,
+      mobileScrollSupport: false,
+      useMouseEvents: mode === 'single',  // glisser au doigt : 1 page seulement (pas de page vide ni de décalage)
+      swipeDistance: 30,
+      showPageCorners: false,
+      startPage: startView * perView
+    });
+    pageFlip.loadFromHTML(bookItems.map(makePage));
+
+    pageFlip.on('changeState', (e) => {
+      if (e.data === 'flipping') {
+        try {
+          const dir = pageFlip.getFlipController().getCalculation().getDirection();
+          animateShift(shiftFor(clampView(currentView() + (dir === 0 ? 1 : -1))));
+        } catch (_) { /* corrigé à la fin par l'événement 'flip' */ }
+      }
+      if (e.data === 'read') { animateShift(shiftFor(currentView())); updateButtons(); }
+    });
+    pageFlip.on('flip', () => { animateShift(shiftFor(currentView())); updateButtons(); });
+
+    shiftNow = shiftTarget = shiftFor(startView);
+    applyShift(shiftNow);
+    bookEl.classList.add('ready');
+    loader.classList.add('is-hidden');
+    updateButtons();
+    building = false;
+  }
+
   async function init() {
     try {
       pdf = await pdfjsLib.getDocument(PDF_URL).promise;
@@ -151,69 +237,12 @@
         canvas.width = 1; canvas.height = 1;
         items.push({ num: n, canvas, status: 'idle' });
       }
-
-      // Page vide invisible avant la couverture : elle s'affiche seule, souple, à droite.
-      bookItems = [null, ...items];
-      // Nombre de pages PDF pair  -> 4e de couverture seule (page vide invisible après).
-      // Nombre de pages PDF impair -> aucune page vide : la dernière vue est une
-      // double page normale (avant-dernière + dernière), sans vue parasite à moitié vide.
-      if (bookItems.length % 2 !== 0) bookItems.push(null);
-      lastIsSingle = bookItems[bookItems.length - 1] === null;
-      const pages = bookItems.map(makePage);
-      spreads = pages.length / 2;
-
       loader.textContent = 'Chargement de la couverture…';
-      await draw(items[0]);     // la couverture d'abord, le reste se charge en arrière-plan
-      refresh(0);
-
-      fitBook();
-      applyShift(shiftFor(0));
-
-      pageFlip = new St.PageFlip(bookEl, {
-        width: PAGE_W,
-        height: PAGE_H,
-        size: 'stretch',
-        minWidth: 200,  maxWidth: 2000,
-        minHeight: 112, maxHeight: 1125,
-        showCover: false,         // showCover rend les couvertures rigides : on s'en passe
-        usePortrait: false,       // toujours en mode livre ouvert
-        autoSize: true,
-        drawShadow: true,
-        maxShadowOpacity: 0.35,
-        flippingTime: FLIP_TIME,
-        mobileScrollSupport: false,
-        useMouseEvents: false,    // navigation par boutons / clavier : plus de coin de page qui se soulève au survol
-        swipeDistance: 30,
-        showPageCorners: false,
-        startPage: 0
-      });
-
-      pageFlip.loadFromHTML(pages);
-
-      // Glisser à la souris / au doigt : on récupère la direction de la pliure
-      pageFlip.on('changeState', (e) => {
-        if (e.data === 'flipping') {
-          try {
-            const dir = pageFlip.getFlipController().getCalculation().getDirection();
-            const s = currentSpread() + (dir === 0 ? 1 : -1);
-            animateShift(shiftFor(Math.max(0, Math.min(spreads - 1, s))));
-          } catch (_) { /* corrigé à la fin par l'événement 'flip' */ }
-        }
-        if (e.data === 'read') {
-          animateShift(shiftFor(currentSpread()));
-          updateButtons();
-        }
-      });
-      pageFlip.on('flip', () => {
-        animateShift(shiftFor(currentSpread()));
-        updateButtons();
-      });
-
-      bookEl.classList.add('ready');
-      loader.classList.add('is-hidden');
-      updateButtons();
+      await build(1);
     } catch (err) {
       console.error(err);
+      building = false;
+      loader.classList.remove('is-hidden');
       loader.textContent =
         'Impossible de charger le PDF. Ouvrez la page via un serveur web (pas en file://) et vérifiez le nom du fichier.';
     }
@@ -227,13 +256,23 @@
     if (e.key === 'ArrowRight') go(+1);
   });
 
+  // Rotation / redimensionnement : on bascule entre 1 page et double page
+  // en restant sur la même page du catalogue.
   let resizeTimer;
   window.addEventListener('resize', () => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => {
-      fitBook();
-      if (pageFlip) pageFlip.update();
-    }, 120);
+    resizeTimer = setTimeout(async () => {
+      if (!pageFlip || building) return;
+      if ((mode === 'single') !== isSingle()) {
+        const v = currentView();
+        const it = bookItems[v * perView] || bookItems[v * perView + 1];
+        await build(it ? it.num : 1);
+      } else {
+        fitBook();
+        pageFlip.update();
+        applyShift(shiftFor(currentView()));
+      }
+    }, 150);
   });
 
   init();
