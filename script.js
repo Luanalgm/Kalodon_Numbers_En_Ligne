@@ -105,19 +105,18 @@
     if (!pageFlip) return;
     if (mode === 'single') {
       perView = 1;
-      views = pageFlip.getPageCount();
+      views = bookItems.length;
     } else {
       perView = pageFlip.getOrientation() === 'portrait' ? 1 : 2;
-      views = Math.ceil(pageFlip.getPageCount() / perView);
+      views = Math.ceil(bookItems.length / perView);
     }
   }
 
   function currentView() {
     syncGeometry();
+    if (!pageFlip) return 0;
     const i = pageFlip.getCurrentPageIndex();
-    if (mode === 'single') {
-      return i;
-    }
+    if (mode === 'single') return i;
     return perView === 2 ? Math.floor(i / 2) : i;
   }
   const clampView = (v) => Math.max(0, Math.min(views - 1, v));
@@ -151,37 +150,44 @@
   }
 
   /* ---------------- Boutons et compteur ---------------- */
-  function updateButtons() {
+  function updateButtons(targetView) {
     if (!pageFlip) return;
-    const v = currentView();
+    
+    const v = (typeof targetView === 'number') ? targetView : currentView();
+    const pageIdx = pageFlip.getCurrentPageIndex();
+    const pageCount = pageFlip.getPageCount();
 
-    // Masquage strict selon la position réelle
-    if (v <= 0) {
-      btnPrev.classList.add('is-hidden');
-    } else {
-      btnPrev.classList.remove('is-hidden');
-    }
+    // Masquage direct et strict pour éviter tout décalage
+    const isFirst = (mode === 'single') ? (pageIdx <= 0 || v <= 0) : (v <= 0);
+    const isLast  = (mode === 'single') ? (pageIdx >= pageCount - 1 || v >= views - 1) : (v >= views - 1);
 
-    if (v >= views - 1) {
-      btnNext.classList.add('is-hidden');
-    } else {
-      btnNext.classList.remove('is-hidden');
-    }
+    btnPrev.classList.toggle('is-hidden', isFirst);
+    btnNext.classList.toggle('is-hidden', isLast);
 
     const nums = bookItems.slice(v * perView, v * perView + perView).filter(Boolean).map((i) => i.num);
     counter.textContent = nums.length > 1
       ? `${nums[0]}–${nums[1]} / ${items.length}`
       : nums.length ? `${nums[0]} / ${items.length}` : `– / ${items.length}`;
+
     if (location.search.includes('debug')) {
-      counter.textContent += ` [${pageFlip.getOrientation()} i=${pageFlip.getCurrentPageIndex()}/${pageFlip.getPageCount()}]`;
+      counter.textContent += ` [${pageFlip.getOrientation()} i=${pageIdx}/${pageCount}]`;
     }
     refresh(v);
   }
 
   function go(dir) {                       // +1 suivant / -1 précédent
     if (!pageFlip || building) return;
-    animateShift(shiftFor(clampView(currentView() + dir)));
-    dir > 0 ? pageFlip.flipNext() : pageFlip.flipPrev();
+    const targetV = clampView(currentView() + dir);
+    
+    // Mise à jour immédiate de l'état des boutons pour supprimer le temps de latence
+    updateButtons(targetV);
+    animateShift(shiftFor(targetV));
+    
+    if (dir > 0) {
+      pageFlip.flipNext();
+    } else {
+      pageFlip.flipPrev();
+    }
   }
 
   /* ---------------- Construction du livre ---------------- */
@@ -243,13 +249,24 @@
       if (e.data === 'flipping') {
         try {
           const dir = pageFlip.getFlipController().getCalculation().getDirection();
-          animateShift(shiftFor(clampView(currentView() + (dir === 0 ? 1 : -1))));
-        } catch (_) { /* corrigé à la fin par l'événement 'flip' */ }
+          const target = clampView(currentView() + (dir === 0 ? 1 : -1));
+          animateShift(shiftFor(target));
+          updateButtons(target);
+        } catch (_) { }
       }
-      if (e.data === 'read') { animateShift(shiftFor(currentView())); updateButtons(); }
+      if (e.data === 'read') { 
+        animateShift(shiftFor(currentView())); 
+        updateButtons(); 
+      }
     });
-    pageFlip.on('flip', () => { animateShift(shiftFor(currentView())); updateButtons(); });
-    pageFlip.on('changeOrientation', () => { applyShift(shiftFor(currentView())); updateButtons(); });
+    pageFlip.on('flip', () => { 
+      animateShift(shiftFor(currentView())); 
+      updateButtons(); 
+    });
+    pageFlip.on('changeOrientation', () => { 
+      applyShift(shiftFor(currentView())); 
+      updateButtons(); 
+    });
 
     syncGeometry();
     shiftNow = shiftTarget = shiftFor(startView);
@@ -302,6 +319,7 @@
         fitBook();
         pageFlip.update();
         applyShift(shiftFor(currentView()));
+        updateButtons();
       }
     }, 150);
   });
