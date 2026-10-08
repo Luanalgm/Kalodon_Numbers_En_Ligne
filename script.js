@@ -101,7 +101,17 @@
   }
 
   /* ---------------- Vue courante ---------------- */
+  // StPageFlip choisit lui-même 1 page (portrait) ou 2 pages (paysage) selon la largeur
+  // réelle du livre : on se cale sur ce qu'il affiche vraiment pour savoir si l'on est
+  // sur la première / dernière page.
+  function syncGeometry() {
+    if (!pageFlip) return;
+    perView = pageFlip.getOrientation() === 'portrait' ? 1 : 2;
+    views   = Math.ceil(pageFlip.getPageCount() / perView);
+  }
+
   function currentView() {
+    syncGeometry();
     const i = pageFlip.getCurrentPageIndex();
     return perView === 2 ? Math.floor(i / 2) : i;
   }
@@ -146,7 +156,10 @@
     const nums = bookItems.slice(v * perView, v * perView + perView).filter(Boolean).map((i) => i.num);
     counter.textContent = nums.length > 1
       ? `${nums[0]}–${nums[1]} / ${items.length}`
-      : `${nums[0]} / ${items.length}`;
+      : nums.length ? `${nums[0]} / ${items.length}` : `– / ${items.length}`;
+    if (location.search.includes('debug')) {
+      counter.textContent += ` [${pageFlip.getOrientation()} i=${pageFlip.getCurrentPageIndex()}/${pageFlip.getPageCount()}]`;
+    }
     refresh(v);
   }
 
@@ -219,7 +232,9 @@
       if (e.data === 'read') { animateShift(shiftFor(currentView())); updateButtons(); }
     });
     pageFlip.on('flip', () => { animateShift(shiftFor(currentView())); updateButtons(); });
+    pageFlip.on('changeOrientation', () => { applyShift(shiftFor(currentView())); updateButtons(); });
 
+    syncGeometry();
     shiftNow = shiftTarget = shiftFor(startView);
     applyShift(shiftNow);
     bookEl.classList.add('ready');
