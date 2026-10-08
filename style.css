@@ -46,11 +46,6 @@ html, body {
   /* dimensions imposées par script.js */
   background: transparent;
   visibility: hidden;
-  /* le livre ne réagit plus au toucher / à la souris : on tourne les pages avec les boutons */
-  pointer-events: none;
-  -webkit-user-select: none;
-  user-select: none;
-  -webkit-touch-callout: none;
 }
 #book.ready { visibility: visible; }
 

@@ -101,12 +101,9 @@
   }
 
   /* ---------------- Vue courante ---------------- */
-  // StPageFlip choisit lui-même 1 page (portrait) ou 2 pages (paysage) selon la largeur
-  // réelle du livre : on se cale sur ce qu'il affiche vraiment pour savoir si l'on est
-  // sur la première / dernière page.
   function syncGeometry() {
     if (!pageFlip) return;
-    perView = pageFlip.getOrientation() === 'portrait' ? 1 : 2;
+    perView = (mode === 'single' || pageFlip.getOrientation() === 'portrait') ? 1 : 2;
     views   = Math.ceil(pageFlip.getPageCount() / perView);
   }
 
@@ -117,9 +114,7 @@
   }
   const clampView = (v) => Math.max(0, Math.min(views - 1, v));
 
-  /* ---------------- Centrage animé (mode double page) ----------------
-     Le livre glisse de 25 % de sa largeur pendant que la page tourne,
-     en temps réel : la reliure suit le papier. En mode 1 page : aucun décalage. */
+  /* ---------------- Centrage animé (mode double page) ---------------- */
   const shiftFor = (v) => {
     if (mode === 'single') return 0;
     if (v <= 0) return -25;
@@ -153,6 +148,7 @@
     const v = currentView();
     btnPrev.classList.toggle('is-hidden', v <= 0);
     btnNext.classList.toggle('is-hidden', v >= views - 1);
+    
     const nums = bookItems.slice(v * perView, v * perView + perView).filter(Boolean).map((i) => i.num);
     counter.textContent = nums.length > 1
       ? `${nums[0]}–${nums[1]} / ${items.length}`
@@ -210,7 +206,7 @@
       minWidth: 300,  maxWidth: 2000,     // 2 x 300 = 600 : en dessous, StPageFlip passe en 1 page
       minHeight: 160, maxHeight: 1125,
       showCover: false,                   // showCover rend les couvertures rigides : on s'en passe
-      usePortrait: true,
+      usePortrait: mode === 'single',
       autoSize: true,
       drawShadow: true,
       maxShadowOpacity: 0.35,
