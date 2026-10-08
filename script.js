@@ -8,6 +8,8 @@
   const RENDER_W   = 1920;   // largeur du canvas rendu (netteté vs mémoire)
   const FLIP_TIME  = 1000;   // durée de la pliure (ms), identique pour TOUTES les pages
   const SINGLE_MAX = 640;    // en dessous de cette largeur d'écran : 1 page à la fois (téléphone en portrait)
+  const ZOOM_MAX   = 4;      // zoom maximum
+  const HI_W       = 3840;   // largeur de rendu haute définition (pages visibles quand on zoome)
   const WINDOW     = 2;      // vues gardées en mémoire de chaque côté de la vue courante
 
   const pdfjsLib = window['pdfjs-dist/build/pdf'];
@@ -20,6 +22,54 @@
   const btnNext = document.getElementById('btn-next');
   const counter = document.getElementById('counter');
   let bookEl    = document.getElementById('book');
+
+  // Le zoom crée lui-même son conteneur, ses boutons et son style :
+  // le script reste fonctionnel même si index.html / style.css n'ont pas été mis à jour.
+  function ensureZoomUI() {
+    let z = document.getElementById('zoom');
+    if (!z) {
+      z = document.createElement('div');
+      z.id = 'zoom';
+      bookEl.parentNode.insertBefore(z, bookEl);
+      z.appendChild(bookEl);
+    }
+    z.style.flex = 'none';
+    z.style.transformOrigin = 'center center';
+    stageEl.style.touchAction = 'none';
+
+    if (!document.getElementById('zoom-style')) {
+      const st = document.createElement('style');
+      st.id = 'zoom-style';
+      st.textContent = `
+        .stage.is-zoomed { overflow: hidden; cursor: grab; }
+        .stage.is-panning { cursor: grabbing; }
+        .zoom-tools { position: absolute; top: 6px; right: 10px; display: flex; gap: 6px; z-index: 60; }
+        .zbtn { min-width: 40px; height: 40px; padding: 0 10px; font-weight: 700; font-size: 1.25rem; line-height: 1;
+                font-family: inherit; color: #fff; background: var(--green, #3bc49c); border: 2px solid var(--green, #3bc49c);
+                border-radius: 999px; cursor: pointer; transition: background .2s, border-color .2s, opacity .2s; }
+        .zbtn--pct { font-size: .85rem; min-width: 58px; }
+        .zbtn:hover:not(:disabled), .zbtn:focus-visible { background: var(--blue-light, #0098DA); border-color: var(--blue-light, #0098DA); outline: none; }
+        .zbtn:focus-visible { box-shadow: 0 0 0 3px #fff; }
+        .zbtn:disabled { opacity: .4; cursor: default; }
+        @media (max-height: 500px) { .zbtn { min-width: 32px; height: 32px; font-size: 1.05rem; } .zbtn--pct { font-size: .75rem; min-width: 50px; } }`;
+      document.head.appendChild(st);
+    }
+    if (!document.getElementById('zoom-tools')) {
+      const t = document.createElement('div');
+      t.id = 'zoom-tools'; t.className = 'zoom-tools';
+      t.setAttribute('role', 'group'); t.setAttribute('aria-label', 'Zoom');
+      t.innerHTML =
+        '<button type="button" id="zoom-out" class="zbtn" aria-label="Zoom arrière">−</button>' +
+        '<button type="button" id="zoom-reset" class="zbtn zbtn--pct" aria-label="Réinitialiser le zoom">100%</button>' +
+        '<button type="button" id="zoom-in" class="zbtn" aria-label="Zoom avant">+</button>';
+      stageEl.appendChild(t);
+    }
+    return z;
+  }
+  const zoomEl  = ensureZoomUI();
+  const zoomIn  = document.getElementById('zoom-in');
+  const zoomOut = document.getElementById('zoom-out');
+  const zoomRst = document.getElementById('zoom-reset');
 
   let pdf = null;
   let items = [];            // une entrée par page du PDF : { num, canvas, status }
@@ -55,6 +105,42 @@
     if (item.status !== 'done') return;
     item.canvas.width = 1; item.canvas.height = 1;
     item.status = 'idle';
+    item.hi = false;
+  }
+
+  // Re-rendu d'une page à une autre définition, sans clignotement :
+  // on dessine hors écran puis on remplace le contenu d'un coup.
+  async function swapResolution(item, width, hi) {
+    item.hi = hi;
+    try {
+      const page = await pdf.getPage(item.num);
+      const base = page.getViewport({ scale: 1 });
+      const viewport = page.getViewport({ scale: width / base.width });
+      const tmp = document.createElement('canvas');
+      tmp.width = Math.round(viewport.width);
+      tmp.height = Math.round(viewport.height);
+      await page.render({ canvasContext: tmp.getContext('2d'), viewport }).promise;
+      if (item.hi !== hi || item.status !== 'done') return;   // changé entre-temps
+      item.canvas.width = tmp.width;
+      item.canvas.height = tmp.height;
+      item.canvas.getContext('2d').drawImage(tmp, 0, 0);
+    } catch (err) {
+      console.error('Re-rendu page ' + item.num, err);
+      item.hi = !hi;
+    }
+  }
+
+  // Haute définition uniquement pour les pages visibles quand on zoome
+  function syncResolution() {
+    if (!pageFlip) return;
+    const wantHi = zoom > 1.4;
+    const v = currentView();
+    bookItems.forEach((item, i) => {
+      if (!item || item.status !== 'done') return;
+      const visible = Math.floor(i / perView) === v;
+      if (wantHi && visible && !item.hi) swapResolution(item, HI_W, true);
+      else if (item.hi && !(wantHi && visible)) swapResolution(item, RENDER_W, false);
+    });
   }
 
   let drawChain = Promise.resolve();
@@ -148,6 +234,7 @@
       ? `${nums[0]}–${nums[1]} / ${items.length}`
       : `${nums[0]} / ${items.length}`;
     refresh(v);
+    syncResolution();
   }
 
   function go(dir) {                       // +1 suivant / -1 précédent
@@ -156,11 +243,127 @@
     dir > 0 ? pageFlip.flipNext() : pageFlip.flipPrev();
   }
 
+
+  /* ---------------- Zoom (boutons, molette, pincement, glisser pour déplacer) ---------------- */
+  let zoom = 1, tx = 0, ty = 0;
+  let pinch = null, touchPan = null, mousePan = null;
+  const inTools = (t) => t.closest && t.closest('#zoom-tools');
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  function clampPan() {
+    const maxX = Math.max(0, (bookEl.offsetWidth  * zoom - stageEl.clientWidth)  / 2);
+    const maxY = Math.max(0, (bookEl.offsetHeight * zoom - stageEl.clientHeight) / 2);
+    tx = clamp(tx, -maxX, maxX);
+    ty = clamp(ty, -maxY, maxY);
+  }
+
+  function applyZoom() {
+    zoomEl.style.transform = (zoom === 1 && !tx && !ty)
+      ? 'none' : `translate3d(${tx}px, ${ty}px, 0) scale(${zoom})`;
+    stageEl.classList.toggle('is-zoomed', zoom > 1);
+    zoomRst.textContent = Math.round(zoom * 100) + '%';
+    zoomIn.disabled  = zoom >= ZOOM_MAX - 0.001;
+    zoomOut.disabled = zoom <= 1.001;
+  }
+
+  let syncTimer;
+  // fx, fy : point fixe du zoom, relatif au centre de la zone (px)
+  function setZoom(nz, fx = 0, fy = 0) {
+    nz = clamp(nz, 1, ZOOM_MAX);
+    const k = nz / zoom;
+    tx = fx - (fx - tx) * k;
+    ty = fy - (fy - ty) * k;
+    zoom = nz;
+    if (zoom <= 1.001) { zoom = 1; tx = ty = 0; }
+    clampPan();
+    applyZoom();
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(syncResolution, 150);
+  }
+
+  function resetZoom() { zoom = 1; tx = ty = 0; applyZoom(); }
+
+  const STEPS = [1, 1.5, 2, 3, 4];
+  zoomIn.addEventListener('click',  () => setZoom(STEPS.find((s) => s > zoom + 0.01) || ZOOM_MAX));
+  zoomOut.addEventListener('click', () => setZoom([...STEPS].reverse().find((s) => s < zoom - 0.01) || 1));
+  zoomRst.addEventListener('click', () => setZoom(1));
+
+  // Molette / pincement du pavé tactile (ctrl + molette)
+  stageEl.addEventListener('wheel', (e) => {
+    if (inTools(e.target)) return;
+    e.preventDefault();
+    const r = stageEl.getBoundingClientRect();
+    const f = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015));
+    setZoom(zoom * f, e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2));
+  }, { passive: false });
+
+  // Doigts : pincer pour zoomer, 1 doigt pour déplacer quand on est zoomé.
+  // Écouteurs en phase de capture : le livre ne reçoit pas ces gestes (pas de pliure accidentelle).
+  const tdist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+
+  stageEl.addEventListener('touchstart', (e) => {
+    if (inTools(e.target)) return;
+    if (e.touches.length === 2) {
+      e.stopPropagation(); e.preventDefault();
+      try { pageFlip && pageFlip.getFlipController().stopMove(); } catch (_) {}
+      touchPan = null;
+      pinch = { d: tdist(e.touches[0], e.touches[1]), z: zoom };
+    } else if (e.touches.length === 1 && zoom > 1) {
+      e.stopPropagation(); e.preventDefault();
+      touchPan = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    }
+  }, { capture: true, passive: false });
+
+  stageEl.addEventListener('touchmove', (e) => {
+    if (pinch && e.touches.length === 2) {
+      e.stopPropagation(); e.preventDefault();
+      const [a, b] = e.touches, r = stageEl.getBoundingClientRect();
+      setZoom(pinch.z * tdist(a, b) / pinch.d,
+              (a.clientX + b.clientX) / 2 - (r.left + r.width / 2),
+              (a.clientY + b.clientY) / 2 - (r.top + r.height / 2));
+    } else if (touchPan && e.touches.length === 1) {
+      e.stopPropagation(); e.preventDefault();
+      const t = e.touches[0];
+      tx += t.clientX - touchPan.x; ty += t.clientY - touchPan.y;
+      touchPan = { x: t.clientX, y: t.clientY };
+      clampPan(); applyZoom();
+    }
+  }, { capture: true, passive: false });
+
+  const touchEnd = (e) => {
+    const handled = pinch || touchPan || zoom > 1;
+    if (e.touches.length < 2) pinch = null;
+    if (e.touches.length === 0) touchPan = null;
+    else if (e.touches.length === 1 && zoom > 1) touchPan = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    if (handled && !inTools(e.target)) e.stopPropagation();
+  };
+  stageEl.addEventListener('touchend', touchEnd, true);
+  stageEl.addEventListener('touchcancel', touchEnd, true);
+
+  // Souris : glisser pour déplacer quand on est zoomé
+  stageEl.addEventListener('mousedown', (e) => {
+    if (zoom <= 1 || e.button !== 0 || inTools(e.target)) return;
+    e.stopPropagation(); e.preventDefault();
+    mousePan = { x: e.clientX, y: e.clientY };
+    stageEl.classList.add('is-panning');
+  }, true);
+  window.addEventListener('mousemove', (e) => {
+    if (!mousePan) return;
+    tx += e.clientX - mousePan.x; ty += e.clientY - mousePan.y;
+    mousePan = { x: e.clientX, y: e.clientY };
+    clampPan(); applyZoom();
+  });
+  window.addEventListener('mouseup', () => {
+    mousePan = null;
+    stageEl.classList.remove('is-panning');
+  });
+
   /* ---------------- Construction du livre ---------------- */
   async function build(startNum) {
     building = true;
     cancelAnimationFrame(shiftRaf); shiftRaf = 0;
 
+    resetZoom();
     mode    = isSingle() ? 'single' : 'spread';
     perView = mode === 'single' ? 1 : 2;
     document.body.dataset.mode = mode;
@@ -180,7 +383,7 @@
     if (pageFlip) { try { pageFlip.destroy(); } catch (_) {} pageFlip = null; }
     const fresh = document.createElement('div');
     fresh.id = 'book';
-    if (bookEl.isConnected) bookEl.replaceWith(fresh); else stageEl.prepend(fresh);
+    if (bookEl.isConnected) bookEl.replaceWith(fresh); else zoomEl.prepend(fresh);
     bookEl = fresh;
     fitBook();
 
@@ -254,6 +457,9 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowLeft')  go(-1);
     if (e.key === 'ArrowRight') go(+1);
+    if (e.key === '+' || e.key === '=') zoomIn.click();
+    if (e.key === '-') zoomOut.click();
+    if (e.key === '0') setZoom(1);
   });
 
   // Rotation / redimensionnement : on bascule entre 1 page et double page
@@ -271,6 +477,7 @@
         fitBook();
         pageFlip.update();
         applyShift(shiftFor(currentView()));
+        clampPan(); applyZoom();
       }
     }, 150);
   });

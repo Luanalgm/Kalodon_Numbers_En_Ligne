@@ -43,9 +43,8 @@ html, body {
 }
 
 #book {
-  /* dimensions imposées par script.js (ratio 2 x 16:9) */
+  /* dimensions imposées par script.js */
   background: transparent;
-  will-change: transform;
   visibility: hidden;
 }
 #book.ready { visibility: visible; }
