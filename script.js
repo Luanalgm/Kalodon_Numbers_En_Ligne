@@ -103,13 +103,21 @@
   /* ---------------- Vue courante ---------------- */
   function syncGeometry() {
     if (!pageFlip) return;
-    perView = (mode === 'single' || pageFlip.getOrientation() === 'portrait') ? 1 : 2;
-    views   = Math.ceil(pageFlip.getPageCount() / perView);
+    if (mode === 'single') {
+      perView = 1;
+      views = pageFlip.getPageCount();
+    } else {
+      perView = pageFlip.getOrientation() === 'portrait' ? 1 : 2;
+      views = Math.ceil(pageFlip.getPageCount() / perView);
+    }
   }
 
   function currentView() {
     syncGeometry();
     const i = pageFlip.getCurrentPageIndex();
+    if (mode === 'single') {
+      return i;
+    }
     return perView === 2 ? Math.floor(i / 2) : i;
   }
   const clampView = (v) => Math.max(0, Math.min(views - 1, v));
@@ -146,9 +154,20 @@
   function updateButtons() {
     if (!pageFlip) return;
     const v = currentView();
-    btnPrev.classList.toggle('is-hidden', v <= 0);
-    btnNext.classList.toggle('is-hidden', v >= views - 1);
-    
+
+    // Masquage strict selon la position réelle
+    if (v <= 0) {
+      btnPrev.classList.add('is-hidden');
+    } else {
+      btnPrev.classList.remove('is-hidden');
+    }
+
+    if (v >= views - 1) {
+      btnNext.classList.add('is-hidden');
+    } else {
+      btnNext.classList.remove('is-hidden');
+    }
+
     const nums = bookItems.slice(v * perView, v * perView + perView).filter(Boolean).map((i) => i.num);
     counter.textContent = nums.length > 1
       ? `${nums[0]}–${nums[1]} / ${items.length}`
@@ -203,8 +222,10 @@
       width: PAGE_W,
       height: PAGE_H,
       size: 'stretch',
-      minWidth: 300,  maxWidth: 2000,     // 2 x 300 = 600 : en dessous, StPageFlip passe en 1 page
-      minHeight: 160, maxHeight: 1125,
+      minWidth: mode === 'single' ? 100 : 300,
+      maxWidth: 2000,
+      minHeight: 100,
+      maxHeight: 1125,
       showCover: false,                   // showCover rend les couvertures rigides : on s'en passe
       usePortrait: mode === 'single',
       autoSize: true,
@@ -212,9 +233,9 @@
       maxShadowOpacity: 0.35,
       flippingTime: FLIP_TIME,
       mobileScrollSupport: false,
-      useMouseEvents: false,              // aucune interaction directe : ni coins, ni clic, ni glisser (boutons / clavier uniquement)
+      useMouseEvents: false,              // aucune interaction directe (boutons / clavier uniquement)
       showPageCorners: false,
-      startPage: startView * perView
+      startPage: mode === 'single' ? startView : startView * perView
     });
     pageFlip.loadFromHTML(bookItems.map(makePage));
 
